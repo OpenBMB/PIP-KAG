@@ -542,7 +542,7 @@ MODEL_FOR_CAUSAL_LM_MAPPING_NAMES = OrderedDict(
         ("plbart", "PLBartForCausalLM"),
         ("prophetnet", "ProphetNetForCausalLM"),
         ("qdqbert", "QDQBertLMHeadModel"),
-        ("qwen2", ("Qwen2ForCausalLM", "Qwen2_pruning_ffnForCausalLM", "Qwen2ForCausalLM_w_act_inhibit")),
+        ("qwen2", ("Qwen2ForCausalLM", "Qwen2_pruning_ffnForCausalLM", "Qwen2ForCausalLM_w_act_inhibit", "Qwen2ForInputContrastive_w_act_inhibit")),
         ("qwen2_moe", "Qwen2MoeForCausalLM"),
         ("recurrent_gemma", "RecurrentGemmaForCausalLM"),
         ("reformer", "ReformerModelWithLMHead"),

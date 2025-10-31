@@ -3235,7 +3235,7 @@ else:
             "Qwen2_pruning_ffnForInputContrastive",
             "Qwen2Model_w_act_inhibit",
             "Qwen2ForCausalLM_w_act_inhibit"
-        
+            "Qwen2ForInputContrastive_w_act_inhibit"
         ]
     )
     _import_structure["models.qwen2_audio"].extend(
@@ -7862,6 +7862,7 @@ if TYPE_CHECKING:
             Qwen2ForTokenClassification,
             Qwen2Model,
             Qwen2PreTrainedModel,
+            Qwen2ForInputContrastive_w_act_inhibit
         )
         from .models.qwen2_audio import (
             Qwen2AudioEncoder,

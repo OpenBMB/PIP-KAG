@@ -76,7 +76,7 @@ class Qwen2MLP(nn.Module):
         return down_proj
 
 class Qwen2MLP_w_act_inhibit(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, inhibit_strength):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
@@ -85,10 +85,10 @@ class Qwen2MLP_w_act_inhibit(nn.Module):
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
-        self.act_inhibit_ratio = config.act_inhibit_ratio
+        self.inhibit_strength = inhibit_strength
 
     def forward(self, x):
-        down_proj = self.down_proj((self.act_fn(self.gate_proj(x)) * self.up_proj(x)) * self.act_inhibit_ratio)
+        down_proj = self.down_proj((self.act_fn(self.gate_proj(x)) * self.up_proj(x)) * self.inhibit_strength)
         return down_proj
 
 def rotate_half(x):
@@ -316,12 +316,12 @@ class Qwen2DecoderLayer(nn.Module):
         return outputs
 
 class Qwen2DecoderLayer_w_act_inhibit(nn.Module):
-    def __init__(self, config: Qwen2Config, layer_idx: int):
+    def __init__(self, config: Qwen2Config, layer_idx: int, inhibit_strength: float = 1.0):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.self_attn = Qwen2Attention(config=config, layer_idx=layer_idx)
         # self.mlp = Qwen2MLP(config)
-        self.mlp = Qwen2MLP_w_act_inhibit(config)
+        self.mlp = Qwen2MLP_w_act_inhibit(config, inhibit_strength)
         self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         if config.sliding_window and config._attn_implementation != "flash_attention_2":
@@ -827,7 +827,7 @@ class Qwen2Model_w_act_inhibit(Qwen2PreTrainedModel):
         config: Qwen2Config
     """
 
-    def __init__(self, config: Qwen2Config):
+    def __init__(self, config: Qwen2Config, inhibit_strength=1.0, inhibit_layer_list=None):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -837,9 +837,12 @@ class Qwen2Model_w_act_inhibit(Qwen2PreTrainedModel):
         #     [Qwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         # )
         self.layers = []
+        if inhibit_layer_list is None:
+            inhibit_layer_list = []
+            
         for layer_idx in range(config.num_hidden_layers):
-            if layer_idx in config.ffn_layer_list:
-                self.layers.append(Qwen2DecoderLayer_w_act_inhibit(config, layer_idx))
+            if layer_idx in inhibit_layer_list:
+                self.layers.append(Qwen2DecoderLayer_w_act_inhibit(config, layer_idx, inhibit_strength))
             else:
                 self.layers.append(Qwen2DecoderLayer(config, layer_idx))
         self.layers = nn.ModuleList(self.layers)
@@ -1085,9 +1088,7 @@ class Qwen2Model_w_act_inhibit(Qwen2PreTrainedModel):
 
         return causal_mask
 
-
 class KwargsForCausalLM(FlashAttentionKwargs, LossKwargs): ...
-
 
 class Qwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
@@ -1209,18 +1210,21 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
             attentions=outputs.attentions,
         )
 
-
 class Qwen2ForCausalLM_w_act_inhibit(Qwen2PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
 
-    def __init__(self, config):
+    def __init__(self, config, inhibit_strength=1.0, inhibit_layer_list=None):
         super().__init__(config)
-        self.model = Qwen2Model_w_act_inhibit(config)
+        self.model = Qwen2Model_w_act_inhibit(config, inhibit_strength, inhibit_layer_list)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        print('正在使用 Qwen2ForCausalLM_w_act_inhibit')
+        print('-' * 50)
+        print('Log in modeling_qwen2.py')
+        print('Using Qwen2ForCausalLM_w_act_inhibit')
+        print(f'Inhibit strength: {inhibit_strength}, Inhibit layer list: {inhibit_layer_list}')
+        print('-' * 50)
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -1330,8 +1334,6 @@ class Qwen2ForCausalLM_w_act_inhibit(Qwen2PreTrainedModel, GenerationMixin):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-
-
 
 class Qwen2DecoderLayer_wo_mlp(nn.Module):
     def __init__(self, config: Qwen2Config, layer_idx: int):
@@ -1783,6 +1785,242 @@ class Qwen2_pruning_ffnForInputContrastive(Qwen2PreTrainedModel, GenerationMixin
         self.final_margin = final_margin
 
 
+        # Initialize weights and apply final processing
+        self.post_init()
+        print('正在使用 Qwen2_pruning_ffnForInputContrastive')
+
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
+
+    @add_start_docstrings_to_model_forward(QWEN2_INPUTS_DOCSTRING)
+    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
+    def forward(
+        self,
+        rag_input_ids: torch.LongTensor = None,
+        rag_attention_mask: Optional[torch.Tensor] = None,
+        rag_labels: Optional[torch.LongTensor] = None,
+        raw_input_ids: torch.LongTensor = None,
+        raw_attention_mask: Optional[torch.Tensor] = None,
+        raw_labels: Optional[torch.LongTensor] = None,
+        # input_ids: torch.LongTensor = None,
+        # attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        # labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        num_logits_to_keep: int = 0,
+        **kwargs: Unpack[KwargsForCausalLM],
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+        r"""
+        Args:
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+            num_logits_to_keep (`int`, *optional*):
+                Calculate logits for the last `num_logits_to_keep` tokens. If `0`, calculate logits for all
+                `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
+                token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
+
+        Returns:
+
+        Example:
+
+        ```python
+        >>> from transformers import AutoTokenizer, Qwen2ForCausalLM
+
+        >>> model = Qwen2ForCausalLM.from_pretrained("meta-qwen2/Qwen2-2-7b-hf")
+        >>> tokenizer = AutoTokenizer.from_pretrained("meta-qwen2/Qwen2-2-7b-hf")
+
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Generate
+        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        ```"""
+        if rag_input_ids is not None and raw_input_ids is None:
+            rag_outputs = self.model(
+                input_ids=rag_input_ids,
+                attention_mask=rag_attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                return_dict=return_dict,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            rag_hidden_states = rag_outputs[0]
+            rag_logits = self.lm_head(rag_hidden_states[:, -num_logits_to_keep:, :])
+
+            rag_loss = None
+            if rag_labels is not None:
+                rag_loss = self.loss_function(logits=rag_logits, labels=rag_labels, vocab_size=self.config.vocab_size, **kwargs)
+
+            return CausalLMOutputWithPast(
+                loss=rag_loss,
+                logits=rag_logits,
+                past_key_values=rag_outputs.past_key_values,
+                hidden_states=rag_outputs.hidden_states,
+                attentions=rag_outputs.attentions,
+            )
+        else:
+            return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+            rag_outputs = self.model(
+                # input_ids=rag_input_ids,
+                rag_input_ids,
+                attention_mask=rag_attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                # output_attentions=output_attentions,
+                # output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            raw_outputs = self.model(
+                # input_ids=raw_input_ids,
+                raw_input_ids,
+                attention_mask=raw_attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                # output_attentions=output_attentions,
+                # output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            
+            rag_hidden_states = rag_outputs[0]
+            rag_logits = self.lm_head(rag_hidden_states[:, -num_logits_to_keep:, :])
+
+            rag_loss = None
+            if rag_labels is not None:
+                rag_loss = self.loss_function(logits=rag_logits, labels=rag_labels, vocab_size=self.config.vocab_size, **kwargs)
+
+            raw_hidden_states = raw_outputs[0]
+            raw_logits = self.lm_head(raw_hidden_states[:, -num_logits_to_keep:, :])
+
+            raw_loss = None
+            if raw_labels is not None:
+                raw_loss = self.loss_function(logits=raw_logits, labels=raw_labels, vocab_size=self.config.vocab_size, **kwargs)
+        
+            alpha = 0.5
+            step = kwargs.get("cur_step", None)
+            total_steps = kwargs.get("total_step", None)
+            cur_step_ratio = step / total_steps
+
+            margin = (self.initial_margin + (self.final_margin - self.initial_margin) * cur_step_ratio) * raw_input_ids.shape[0]
+            # margin = 1
+            contrastive_loss = torch.relu(rag_loss - raw_loss + margin)
+            loss = alpha * contrastive_loss + (1-alpha) * rag_loss
+
+            return InputContrastiveOutputWithPast(
+                loss = loss,
+                rag_loss=rag_loss,
+                rag_logits=rag_logits,
+                rag_past_key_values=rag_outputs.past_key_values,
+                rag_hidden_states=rag_outputs.hidden_states,
+                rag_attentions=rag_outputs.attentions,
+                raw_loss=raw_loss,
+                raw_logits=raw_logits,
+                raw_past_key_values=raw_outputs.past_key_values,
+                raw_hidden_states=raw_outputs.hidden_states,
+                raw_attentions=raw_outputs.attentions,
+                metrics={
+                    'contrastive_loss': contrastive_loss.detach(),
+                    'rag_loss': rag_loss.detach(),
+                    'raw_loss': raw_loss.detach(),
+                    'margin': margin,
+                }
+            )
+
+
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            cache_position=cache_position,
+            **kwargs,
+        )
+
+        hidden_states = outputs[0]
+        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
+
+        loss = None
+        if labels is not None:
+            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return (loss,) + output if loss is not None else output
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+class Qwen2ForInputContrastive_w_act_inhibit(Qwen2PreTrainedModel, GenerationMixin):
+    _tied_weights_keys = ["lm_head.weight"]
+    _tp_plan = {"lm_head": "colwise_rep"}
+
+    def __init__(self, config, initial_margin=1, final_margin=1,  alpha=0.5, beta=0.5, inhibit_strength=1.0, inhibit_layer_list=None):
+        super().__init__(config)
+        self.model = Qwen2Model_w_act_inhibit(config, inhibit_strength, inhibit_layer_list)
+        self.vocab_size = config.vocab_size
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.initial_margin = initial_margin
+        self.final_margin = final_margin
+        self.alpha = alpha
+        self.beta = beta
+        print('-' * 50)
+        print('Using Qwen2ForInputContrastive_w_act_inhibit!')
+        print(f'Inhibit strength: {inhibit_strength}, Inhibit layer list: {inhibit_layer_list}')
+        print('-' * 50)
         # Initialize weights and apply final processing
         self.post_init()
         print('正在使用 Qwen2_pruning_ffnForInputContrastive')

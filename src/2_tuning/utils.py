@@ -45,8 +45,9 @@ def load_model_and_tokenizer(model_args, training_args):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if training_args.model_type == 'LlamaForCausalLM_w_act_inhibit' or training_args.model_type == 'LlamaForInputContrastivew_act_inhibit':
-        if training_args.model_type == 'LlamaForCausalLM_w_act_inhibit':
+    model_type = training_args.model_type
+    if model_type in ['LlamaForCausalLM_w_act_inhibit', 'LlamaForInputContrastivew_act_inhibit', 'Qwen2ForInputContrastivew_act_inhibit']:
+        if model_type == 'LlamaForCausalLM_w_act_inhibit':
             config = AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
             config.architectures= ['LlamaForCausalLM_w_act_inhibit']
             model = AutoModelForCausalLM.from_pretrained(
@@ -57,10 +58,21 @@ def load_model_and_tokenizer(model_args, training_args):
                     inhibit_strength= training_args.inhibit_strength,
                     inhibit_layer_list= training_args.inhibit_layer_list,
             )            
-        elif training_args.model_type == 'LlamaForInputContrastivew_act_inhibit':
+        elif model_type == 'LlamaForInputContrastivew_act_inhibit':
             config = AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
             config.architectures= ['LlamaForInputContrastivew_act_inhibit'] 
             model = LlamaForInputContrastivew_act_inhibit.from_pretrained(
+                    model_args.model_name_or_path,
+                    torch_dtype=torch.bfloat16,  # 使用 BF16
+                    config=config,
+                    trust_remote_code=True,
+                    inhibit_strength= training_args.inhibit_strength,
+                    inhibit_layer_list= training_args.inhibit_layer_list,
+            )
+        elif model_type == 'Qwen2ForInputContrastivew_act_inhibit':
+            config = AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
+            config.architectures= ['Qwen2ForInputContrastive_w_act_inhibit']
+            model = AutoModelForCausalLM.from_pretrained(
                     model_args.model_name_or_path,
                     torch_dtype=torch.bfloat16,  # 使用 BF16
                     config=config,
