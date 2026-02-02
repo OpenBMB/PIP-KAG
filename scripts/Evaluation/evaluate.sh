@@ -79,6 +79,7 @@ device=$3
 schema=$4       # base instr+opin attr and so on ... line190 in eval_CoFaithfulQA.py
 max_new_tokens=$5
 act_inhibit_ratio=$6
+use_chat_template=$7
 echo "==============================="
 echo "🚀 Using device: $device"
 echo "==============================="
